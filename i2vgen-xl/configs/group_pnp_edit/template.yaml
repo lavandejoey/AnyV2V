@@ -2,7 +2,7 @@
 
 # General
 seed: 8888
-device: "cuda:4" # <-- change this to the GPU you want to use
+device: "cuda:0" # <-- change this to the GPU you want to use
 debug: False # For logging DEBUG level messages otherwise INFO
 
 # Dir

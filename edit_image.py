@@ -134,10 +134,11 @@ if __name__ == "__main__":
             prompt_type = "instruct"
 
         video_path = args.video_path
-        
+        # Always set video_filename and filename_noext before output_dir logic
+        video_filename = os.path.basename(video_path)
+        filename_noext = os.path.splitext(video_filename)[0]
+
         if args.output_dir is None:
-            video_filename = os.path.basename(video_path)
-            filename_noext = os.path.splitext(video_filename)[0]
             output_dir = os.path.dirname(video_path)
         else:
             output_dir = args.output_dir

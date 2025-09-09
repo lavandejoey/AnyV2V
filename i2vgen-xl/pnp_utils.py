@@ -11,9 +11,30 @@ from torchvision.io import read_video, write_video
 import os
 import random
 import numpy as np
-
+import inspect
 import logging
+
 logger = logging.getLogger(__name__)
+
+
+def _call_with_optional_scale(layer, x, scale):
+    """
+    Calls layer(x, scale) only if the layer's forward supports a 'scale' arg (LoRA/PEFT layers).
+    Falls back to layer(x) for plain nn layers.
+    """
+    try:
+        sig = inspect.signature(layer.forward)
+        if "scale" in sig.parameters:
+            # supports named 'scale'
+            return layer(x, scale=scale)
+        # Some custom layers may accept a 2nd positional arg; be conservative:
+        if len(sig.parameters) > 1:
+            return layer(x, scale)
+    except (ValueError, TypeError):
+        # Builtins / C-ext may not expose signature; just call without scale
+        pass
+    return layer(x)
+
 
 # Modified from tokenflow_utils.py
 def register_time(model, t):
@@ -39,9 +60,9 @@ from diffusers.models.downsampling import Downsample2D
 def register_conv_injection(model, injection_schedule):
     def conv_forward(self):
         def forward(
-            input_tensor: torch.FloatTensor,
-            temb: torch.FloatTensor,
-            scale: float = 1.0,
+                input_tensor: torch.FloatTensor,
+                temb: torch.FloatTensor,
+                scale: float = 1.0,
         ) -> torch.FloatTensor:
             hidden_states = input_tensor
 
@@ -75,16 +96,18 @@ def register_conv_injection(model, injection_schedule):
                     else self.downsample(hidden_states)
                 )
 
-            hidden_states = self.conv1(hidden_states, scale) if not USE_PEFT_BACKEND else self.conv1(hidden_states)
+            # hidden_states = self.conv1(hidden_states, scale) if not USE_PEFT_BACKEND else self.conv1(hidden_states)
+            hidden_states = _call_with_optional_scale(self.conv1, hidden_states, scale)
 
             if self.time_emb_proj is not None:
                 if not self.skip_time_act:
                     temb = self.nonlinearity(temb)
-                temb = (
-                    self.time_emb_proj(temb, scale)[:, :, None, None]
-                    if not USE_PEFT_BACKEND
-                    else self.time_emb_proj(temb)[:, :, None, None]
-                )
+                temb = _call_with_optional_scale(self.time_emb_proj, temb, scale)[:, :, None, None]
+                # temb = (
+                #     self.time_emb_proj(temb, scale)[:, :, None, None]
+                #     if not USE_PEFT_BACKEND
+                #     else self.time_emb_proj(temb)[:, :, None, None]
+                # )
 
             if self.time_embedding_norm == "default":
                 if temb is not None:
@@ -104,22 +127,24 @@ def register_conv_injection(model, injection_schedule):
             hidden_states = self.nonlinearity(hidden_states)
 
             hidden_states = self.dropout(hidden_states)
-            hidden_states = self.conv2(hidden_states, scale) if not USE_PEFT_BACKEND else self.conv2(hidden_states)
+            # hidden_states = self.conv2(hidden_states, scale) if not USE_PEFT_BACKEND else self.conv2(hidden_states)
+            hidden_states = _call_with_optional_scale(self.conv2, hidden_states, scale)
 
             if self.injection_schedule is not None and (self.t in self.injection_schedule or self.t == 1000):
                 logger.debug(f"PnP Injecting Conv at t={self.t}")
                 source_batch_size = int(hidden_states.shape[0] // 3)
                 # inject unconditional
-                hidden_states[source_batch_size : 2 * source_batch_size] = hidden_states[:source_batch_size]
+                hidden_states[source_batch_size: 2 * source_batch_size] = hidden_states[:source_batch_size]
                 # inject conditional
-                hidden_states[2 * source_batch_size :] = hidden_states[:source_batch_size]
+                hidden_states[2 * source_batch_size:] = hidden_states[:source_batch_size]
 
             if self.conv_shortcut is not None:
-                input_tensor = (
-                    self.conv_shortcut(input_tensor, scale)
-                    if not USE_PEFT_BACKEND
-                    else self.conv_shortcut(input_tensor)
-                )
+                input_tensor = _call_with_optional_scale(self.conv_shortcut, input_tensor, scale)
+                # input_tensor = (
+                #     self.conv_shortcut(input_tensor, scale)
+                #     if not USE_PEFT_BACKEND
+                #     else self.conv_shortcut(input_tensor)
+                # )
 
             output_tensor = (input_tensor + hidden_states) / self.output_scale_factor
 
@@ -137,16 +162,17 @@ def register_conv_injection(model, injection_schedule):
 from typing import Optional
 from diffusers.models.attention_processor import AttnProcessor2_0
 
+
 def register_spatial_attention_pnp(model, injection_schedule):
     class ModifiedSpaAttnProcessor(AttnProcessor2_0):
         def __call__(
-            self,
-            attn,  # attn: Attention,
-            hidden_states: torch.FloatTensor,
-            encoder_hidden_states: Optional[torch.FloatTensor] = None,
-            attention_mask: Optional[torch.FloatTensor] = None,
-            temb: Optional[torch.FloatTensor] = None,
-            scale: float = 1.0,
+                self,
+                attn,  # attn: Attention,
+                hidden_states: torch.FloatTensor,
+                encoder_hidden_states: Optional[torch.FloatTensor] = None,
+                attention_mask: Optional[torch.FloatTensor] = None,
+                temb: Optional[torch.FloatTensor] = None,
+                scale: float = 1.0,
         ) -> torch.FloatTensor:
             residual = hidden_states
             if attn.spatial_norm is not None:
@@ -175,25 +201,34 @@ def register_spatial_attention_pnp(model, injection_schedule):
                 hidden_states = attn.group_norm(hidden_states.transpose(1, 2)).transpose(1, 2)
 
             args = () if USE_PEFT_BACKEND else (scale,)
-            query = attn.to_q(hidden_states, *args)
+            # query = attn.to_q(hidden_states, *args)
+            #
+            # if encoder_hidden_states is None:
+            #     encoder_hidden_states = hidden_states
+            # elif attn.norm_cross:
+            #     encoder_hidden_states = attn.norm_encoder_hidden_states(encoder_hidden_states)
+            #
+            # key = attn.to_k(encoder_hidden_states, *args)
+            # value = attn.to_v(encoder_hidden_states, *args)
+            query = _call_with_optional_scale(attn.to_q, hidden_states, scale)
 
             if encoder_hidden_states is None:
                 encoder_hidden_states = hidden_states
             elif attn.norm_cross:
                 encoder_hidden_states = attn.norm_encoder_hidden_states(encoder_hidden_states)
 
-            key = attn.to_k(encoder_hidden_states, *args)
-            value = attn.to_v(encoder_hidden_states, *args)
+            key   = _call_with_optional_scale(attn.to_k, encoder_hidden_states, scale)
+            value = _call_with_optional_scale(attn.to_v, encoder_hidden_states, scale)
 
             # Modified here.
             if self.injection_schedule is not None and (self.t in self.injection_schedule or self.t == 1000):
                 logger.debug(f"PnP Injecting Spa-Attn at t={self.t}")
                 # inject source into unconditional
-                query[chunk_size : 2 * chunk_size] = query[:chunk_size]
-                key[chunk_size : 2 * chunk_size] = key[:chunk_size]
+                query[chunk_size: 2 * chunk_size] = query[:chunk_size]
+                key[chunk_size: 2 * chunk_size] = key[:chunk_size]
                 # inject source into conditional
-                query[2 * chunk_size :] = query[:chunk_size]
-                key[2 * chunk_size :] = key[:chunk_size]
+                query[2 * chunk_size:] = query[:chunk_size]
+                key[2 * chunk_size:] = key[:chunk_size]
 
             inner_dim = key.shape[-1]
             head_dim = inner_dim // attn.heads
@@ -213,7 +248,8 @@ def register_spatial_attention_pnp(model, injection_schedule):
             hidden_states = hidden_states.to(query.dtype)
 
             # linear proj
-            hidden_states = attn.to_out[0](hidden_states, *args)
+            # hidden_states = attn.to_out[0](hidden_states, *args)
+            hidden_states = _call_with_optional_scale(attn.to_out[0], hidden_states, scale)
             # dropout
             hidden_states = attn.to_out[1](hidden_states)
 
@@ -242,17 +278,16 @@ def register_spatial_attention_pnp(model, injection_schedule):
             module.processor = modified_processor
 
 
-
 def register_temp_attention_pnp(model, injection_schedule):
     class ModifiedTmpAttnProcessor(AttnProcessor2_0):
         def __call__(
-            self,
-            attn,  # attn: Attention,
-            hidden_states: torch.FloatTensor,
-            encoder_hidden_states: Optional[torch.FloatTensor] = None,
-            attention_mask: Optional[torch.FloatTensor] = None,
-            temb: Optional[torch.FloatTensor] = None,
-            scale: float = 1.0,
+                self,
+                attn,  # attn: Attention,
+                hidden_states: torch.FloatTensor,
+                encoder_hidden_states: Optional[torch.FloatTensor] = None,
+                attention_mask: Optional[torch.FloatTensor] = None,
+                temb: Optional[torch.FloatTensor] = None,
+                scale: float = 1.0,
         ) -> torch.FloatTensor:
             residual = hidden_states
             if attn.spatial_norm is not None:
@@ -281,25 +316,34 @@ def register_temp_attention_pnp(model, injection_schedule):
                 hidden_states = attn.group_norm(hidden_states.transpose(1, 2)).transpose(1, 2)
 
             args = () if USE_PEFT_BACKEND else (scale,)
-            query = attn.to_q(hidden_states, *args)
+            # query = attn.to_q(hidden_states, *args)
+            #
+            # if encoder_hidden_states is None:
+            #     encoder_hidden_states = hidden_states
+            # elif attn.norm_cross:
+            #     encoder_hidden_states = attn.norm_encoder_hidden_states(encoder_hidden_states)
+            #
+            # key = attn.to_k(encoder_hidden_states, *args)
+            # value = attn.to_v(encoder_hidden_states, *args)
+            query = _call_with_optional_scale(attn.to_q, hidden_states, scale)
 
             if encoder_hidden_states is None:
                 encoder_hidden_states = hidden_states
             elif attn.norm_cross:
                 encoder_hidden_states = attn.norm_encoder_hidden_states(encoder_hidden_states)
 
-            key = attn.to_k(encoder_hidden_states, *args)
-            value = attn.to_v(encoder_hidden_states, *args)
+            key   = _call_with_optional_scale(attn.to_k, encoder_hidden_states, scale)
+            value = _call_with_optional_scale(attn.to_v, encoder_hidden_states, scale)
 
             # Modified here.
             if self.injection_schedule is not None and (self.t in self.injection_schedule or self.t == 1000):
                 logger.debug(f"PnP Injecting Tmp-Attn at t={self.t}")
                 # inject source into unconditional
-                query[chunk_size : 2 * chunk_size] = query[:chunk_size]
-                key[chunk_size : 2 * chunk_size] = key[:chunk_size]
+                query[chunk_size: 2 * chunk_size] = query[:chunk_size]
+                key[chunk_size: 2 * chunk_size] = key[:chunk_size]
                 # inject source into conditional
-                query[2 * chunk_size :] = query[:chunk_size]
-                key[2 * chunk_size :] = key[:chunk_size]
+                query[2 * chunk_size:] = query[:chunk_size]
+                key[2 * chunk_size:] = key[:chunk_size]
 
             inner_dim = key.shape[-1]
             head_dim = inner_dim // attn.heads
@@ -319,7 +363,8 @@ def register_temp_attention_pnp(model, injection_schedule):
             hidden_states = hidden_states.to(query.dtype)
 
             # linear proj
-            hidden_states = attn.to_out[0](hidden_states, *args)
+            # hidden_states = attn.to_out[0](hidden_states, *args)
+            hidden_states = _call_with_optional_scale(attn.to_out[0], hidden_states, scale)
             # dropout
             hidden_states = attn.to_out[1](hidden_states)
 
@@ -332,6 +377,7 @@ def register_temp_attention_pnp(model, injection_schedule):
             hidden_states = hidden_states / attn.rescale_output_factor
 
             return hidden_states
+
     # for _, module in model.unet.named_modules():
     #     if isinstance_str(module, "BasicTransformerBlock"):
     #         module.attn1.processor.__call__ = ta_processor__call__(module.attn1.processor)

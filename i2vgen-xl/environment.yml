@@ -1,4 +1,4 @@
-name: anyv2v-i2vgen-xl
+name: anyv2v39
 channels:
   - pytorch
   - nvidia
@@ -17,5 +17,5 @@ dependencies:
     - omegaconf
     - opencv-python
     - ipython
-    - moviepy
+    - moviepy<=2
     - notebook
