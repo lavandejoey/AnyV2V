@@ -7,7 +7,7 @@ import numpy as np
 
 import black_box_image_edit as image_edit
 
-def infer_video(model, video_path, output_dir, prompt, prompt_type="instruct", force_512=False, seed=42, negative_prompt="", overwrite=False):
+def infer_video(model, video_path, output_dir, prompt, prompt_type="instruct", force_512=False, seed=42, negative_prompt="", overwrite=False, output_filename=None):
     """
     Processes videos from the input directory, resizes them to 512x512 before feeding into the model by first frame,
     and saves the processed video back to its original size in the output directory.
@@ -17,6 +17,7 @@ def infer_video(model, video_path, output_dir, prompt, prompt_type="instruct", f
         input_dir (str): Path to the directory containing input videos.
         output_dir (str): Path to the directory where processed videos will be saved.
         prompt (str): Instruction prompt for video editing.
+        output_filename (str): Optional custom filename for output (without extension).
     """
 
     # Create the output directory if it does not exist
@@ -33,7 +34,11 @@ def infer_video(model, video_path, output_dir, prompt, prompt_type="instruct", f
     if not os.path.exists(final_output_dir):
         os.makedirs(final_output_dir)
 
-    result_path = os.path.join(final_output_dir, prompt + ".png")
+    # Use custom filename if provided, otherwise use prompt
+    if output_filename:
+        result_path = os.path.join(final_output_dir, output_filename + ".png")
+    else:
+        result_path = os.path.join(final_output_dir, prompt + ".png")
 
     # Check if result already exists
     if os.path.exists(result_path) and overwrite is False:
@@ -74,6 +79,7 @@ if __name__ == "__main__":
     parser.add_argument('--dict_file', type=str, required=False, help='JSON file containing files, instructions etc.', default=None)
     parser.add_argument('--seed', type=int, required=False, help='Seed for random number generator', default=42)
     parser.add_argument('--negative_prompt', type=str, required=False, help='Negative prompt for editing', default=None)
+    parser.add_argument('--output_filename', type=str, required=False, help='Custom output filename (without extension)', default=None)
     args = parser.parse_args()
 
     if args.negative_prompt is None:
@@ -146,4 +152,4 @@ if __name__ == "__main__":
         print("video_filename", video_filename)
         print("output_dir", output_dir)
 
-        infer_video(model, video_path, output_dir, args.prompt, prompt_type, args.force_512, args.seed, negative_prompt)
+        infer_video(model, video_path, output_dir, args.prompt, prompt_type, args.force_512, args.seed, negative_prompt, output_filename=args.output_filename)
