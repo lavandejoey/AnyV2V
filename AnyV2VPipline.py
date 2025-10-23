@@ -239,6 +239,7 @@ class AnyV2VRunner:
         self.rank, self.local_rank, self.world_size = get_dist_info()
         self.i2vgen_xl_path = self.anyv2v_root / "i2vgen-xl"
         self.demo_path = self.anyv2v_root / "demo"
+        self.demo_path.mkdir(parents=True, exist_ok=True)
         self.ddim_config_path: Optional[Path] = None
         self.pnp_config_path: Optional[Path] = None
 
@@ -264,12 +265,19 @@ class AnyV2VRunner:
 
         # Create symlink in demo folder so AnyV2V can find the work directory
         demo_link = self.demo_path / video_name
+        demo_link.parent.mkdir(parents=True, exist_ok=True)
         if demo_link.exists() or demo_link.is_symlink():
-            if demo_link.is_symlink():
-                demo_link.unlink()
-            elif demo_link.is_dir():
-                shutil.rmtree(demo_link)
-        demo_link.symlink_to(work_dir, target_is_directory=True)
+            try:
+                if demo_link.is_symlink() or demo_link.is_file():
+                    demo_link.unlink()
+                elif demo_link.is_dir():
+                    shutil.rmtree(demo_link)
+            except Exception:
+                pass
+        try:
+            demo_link.symlink_to(work_dir, target_is_directory=True)
+        except FileExistsError:
+            pass
 
         clip = VideoFileClip(str(vp))
         info = VideoInfo(

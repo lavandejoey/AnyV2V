@@ -52,7 +52,15 @@ import os
 print("CUDA_VISIBLE_DEVICES:", os.environ.get("CUDA_VISIBLE_DEVICES"))
 PY
 
-cp "/projects/hi-paris/DeepFakeDataset/DeepFake_V2/V2V/AnyV2V/*/color_change/*.mp4" "/projects/hi-paris/DeepFakeDataset/FakeParts_data_addition/Change_of_style/AnyV2V/fake_videos/"
+# make sure the dest exists
+mkdir -p "/projects/hi-paris/DeepFakeDataset/FakeParts_data_addition/Change_of_style/AnyV2V/fake_videos"
+
+# expand the glob safely; avoid errors when empty
+shopt -s nullglob
+mp4s=(/projects/hi-paris/DeepFakeDataset/DeepFake_V2/V2V/AnyV2V/*/color_change/*.mp4)
+if ((${#mp4s[@]})); then
+  cp -n "${mp4s[@]}" "/projects/hi-paris/DeepFakeDataset/FakeParts_data_addition/Change_of_style/AnyV2V/fake_videos/"
+fi
 
 # ---- launch ----
 srun --gres=gpu:"${NP}" torchrun \
